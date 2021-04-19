@@ -37,4 +37,5 @@
    (>= 2.3.0))
   (odoc (>= 1.4.1))
   (lwt :with-test)
-  (alcotest :with-test)))
+  (alcotest :with-test)
+  ppx_deriving))

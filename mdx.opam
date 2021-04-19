@@ -36,6 +36,7 @@ depends: [
   "odoc" {>= "1.4.1"}
   "lwt" {with-test}
   "alcotest" {with-test}
+  "ppx_deriving"
 ]
 build: [
   ["dune" "subst"] {pinned}
