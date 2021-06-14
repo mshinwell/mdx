@@ -33,7 +33,7 @@ let run_exn (`Setup ()) (`Non_deterministic non_deterministic)
     | Some (File outfile) -> Some (`File outfile)
     | None -> None
   in
-  let dirs = [] in
+  let directives = [] in
   let packages =
     [
       Mdx_test.Package.unix;
@@ -43,7 +43,7 @@ let run_exn (`Setup ()) (`Non_deterministic non_deterministic)
   let predicates = [ Mdx_test.Predicate.native ] in
   Mdx_test.run_exn ~non_deterministic ~silent_eval ~record_backtrace ~syntax
     ~silent ~verbose_findlib ~prelude ~prelude_str ~file ~section ~root
-    ~force_output ~output ~dirs ~packages ~predicates
+    ~force_output ~output ~directives ~packages ~predicates
 
 let report_error_in_block block msg =
   let kind =
