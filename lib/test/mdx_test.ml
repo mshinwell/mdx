@@ -154,10 +154,17 @@ let eval_ocaml ~block ?syntax ?root c ppf cmd errors =
     (* [eval_ocaml] only called on OCaml blocks *)
     | _ -> assert false
   in
-  match eval_test ?root ~block c cmd with
-  | Ok _ -> Block.pp ?syntax ppf (update ~errors:[] block)
-  | Error lines ->
-      let errors =
+  (* See https://github.com/realworldocaml/mdx/issues/434 *)
+  let contains_warnings = String.is_infix ~affix:"Warning " in
+  let lines =
+    match eval_test ?root ~block c cmd with
+    | Ok lines -> List.filter contains_warnings lines
+    | Error lines -> lines
+  in
+  let errors =
+    match lines with
+    | [] -> []
+    | lines ->
         let lines = split_lines lines in
         let output = List.map output_from_line lines in
         if Output.equal output errors then errors
@@ -167,8 +174,8 @@ let eval_ocaml ~block ?syntax ?root c ppf cmd errors =
               | `Ellipsis -> `Ellipsis
               | `Output x -> `Output (ansi_color_strip x))
             (Output.merge output errors)
-      in
-      Block.pp ?syntax ppf (update ~errors block)
+  in
+  Block.pp ?syntax ppf (update ~errors block)
 
 let lines = function Ok x | Error x -> x
 
@@ -274,8 +281,9 @@ let run_exn ~non_deterministic ~silent_eval ~record_backtrace ~syntax ~silent
     match syntax with Some syntax -> Some syntax | None -> Syntax.infer ~file
   in
   let c =
-    Mdx_top.init ~verbose:(not silent_eval) ~silent ~verbose_findlib ~directives
-      ~packages ~predicates ()
+    lazy
+      (Mdx_top.init ~verbose:(not silent_eval) ~silent ~verbose_findlib ~directives
+         ~packages ~predicates ())
   in
   let preludes = preludes ~prelude ~prelude_str in
 
@@ -295,7 +303,7 @@ let run_exn ~non_deterministic ~silent_eval ~record_backtrace ~syntax ~silent
           let det () =
             assert (syntax <> Some Cram);
             Mdx_top.in_env env (fun () ->
-                eval_ocaml ~block:t ?syntax ?root c ppf t.contents errors)
+              eval_ocaml ~block:t ?syntax ?root (Lazy.force c) ppf t.contents errors)
           in
           with_non_det non_deterministic non_det ~command:print_block
             ~output:det ~det
@@ -323,7 +331,7 @@ let run_exn ~non_deterministic ~silent_eval ~record_backtrace ~syntax ~silent
                 (fun (test : Toplevel.t) ->
                   match
                     Mdx_top.in_env env (fun () ->
-                        eval_test ~block:t ?root c test.command)
+                      eval_test ~block:t ?root (Lazy.force c) test.command)
                   with
                   | Ok _ -> ()
                   | Error e ->
@@ -334,7 +342,7 @@ let run_exn ~non_deterministic ~silent_eval ~record_backtrace ~syntax ~silent
             ~det:(fun () ->
               assert (syntax <> Some Cram);
               Mdx_top.in_env env (fun () ->
-                  run_toplevel_tests ?syntax ?root c ppf tests t))
+                run_toplevel_tests ?syntax ?root (Lazy.force c) ppf tests t))
     else print_block ()
   in
   let gen_corrected file_contents items =
@@ -343,7 +351,7 @@ let run_exn ~non_deterministic ~silent_eval ~record_backtrace ~syntax ~silent
     let buf = Buffer.create (String.length file_contents + 1024) in
     let ppf = Format.formatter_of_buffer buf in
     let envs = Document.envs items in
-    let eval lines () = eval_raw ?root c lines in
+    let eval lines () = eval_raw ?root (Lazy.force c) lines in
     let eval_in_env lines env = Mdx_top.in_env env (eval lines) in
     List.iter
       (function

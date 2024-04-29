@@ -20,6 +20,30 @@ open Compat_top
 
 type directive = Directory of string | Load of string
 
+let () =
+  (* TODO: consider re-enabling warning 73. *)
+  ignore (Warnings.parse_options true "-58-73" : Warnings.alert option);
+  ignore (Warnings.parse_options false "-58-73" : Warnings.alert option)
+
+module Toploop = struct
+  include Opttoploop
+
+  let apply_rewriters (p : Parsetree.toplevel_phrase) =
+    match p with
+    | Ptop_dir _ as x -> x
+    | Ptop_def s ->
+      Ptop_def
+        (s
+         |> Ppxlib_ast.Selected_ast.Of_ocaml.copy_structure
+         |> Ppxlib.Driver.map_structure
+         |> Ppxlib_ast.Selected_ast.To_ocaml.copy_structure
+        )
+  ;;
+
+  let execute_phrase verbose ppf p =
+    execute_phrase verbose ppf (apply_rewriters p)
+end
+
 let redirect ~f =
   let stdout_backup = Unix.dup Unix.stdout in
   let stderr_backup = Unix.dup Unix.stdout in
@@ -195,26 +219,35 @@ module Rewrite = struct
     let preload = None in
     let open Ast_helper in
     let rewrite loc e =
+      let loc = Location.ghostify loc in
       let punit =
         Pat.construct (Location.mkloc (Longident.Lident "()") loc) None
       in
       with_default_loc loc @@ fun () ->
-      Exp.apply
+      Exp.apply ~loc
         (Exp.ident (Location.mkloc runner loc))
-        [ (Asttypes.Nolabel, Exp.fun_ Asttypes.Nolabel None punit e) ]
+        [ (Asttypes.Nolabel,
+           Jane_syntax.N_ary_functions.expr_of ~loc
+             ([ { pparam_loc = loc;
+                  pparam_desc = Pparam_val (Asttypes.Nolabel, None, punit);
+                }
+              ], None, Pfunction_body e)
+
+          )
+        ]
     in
     { typ; runner; rewrite; witness; preload }
 
   let normalize_type_path env path =
     match Env.find_type path env with
     | { Types.type_manifest = Some ty; _ } -> (
-        match Ctype.expand_head env ty with
-        | { Types.desc = Types.Tconstr (path, _, _); _ } -> path
+        match Types.get_desc (Ctype.expand_head env ty) with
+        | Types.Tconstr (path, _, _) -> path
         | _ -> path)
     | _ -> path
 
   let is_persistent_value env longident =
-    let is_persistent_path p = Ident.persistent (get_id_in_path p) in
+    let is_persistent_path p = Ident.is_global_or_predef (get_id_in_path p) in
     try is_persistent_path (fst (Compat_top.lookup_value longident env))
     with Not_found -> false
 
@@ -237,8 +270,8 @@ module Rewrite = struct
   let item ts env pstr_item tstr_item =
     match (pstr_item.Parsetree.pstr_desc, tstr_item.Typedtree.str_desc) with
     | ( Parsetree.Pstr_eval (e, _),
-        Typedtree.Tstr_eval ({ Typedtree.exp_type = typ; _ }, _) ) -> (
-        match (Ctype.repr typ).Types.desc with
+        Typedtree.Tstr_eval ({ Typedtree.exp_type = typ; _ }, _, _) ) -> (
+        match Types.get_desc typ with
         | Types.Tconstr (path, _, _) -> apply ts env pstr_item path e
         | _ -> pstr_item)
     | _ -> pstr_item
@@ -275,7 +308,7 @@ module Rewrite = struct
   let preload verbose ppf =
     let require pkg =
       let p = Compat_top.top_directive_require pkg in
-      let _ = Opttoploop.execute_phrase verbose ppf p in
+      let _ = Toploop.execute_phrase verbose ppf p in
       ()
     in
     match active_rewriters () with
@@ -326,7 +359,7 @@ let toplevel_exec_phrase t ppf p =
       if !Clflags.dump_parsetree then Printast.top_phrase ppf phrase;
       if !Clflags.dump_source then Pprintast.top_phrase ppf phrase;
       Env.reset_cache_toplevel ();
-      Opttoploop.execute_phrase t.verbose ppf phrase
+      Toploop.execute_phrase t.verbose ppf phrase
 
 type var_and_value = V : 'a ref * 'a -> var_and_value
 
@@ -453,8 +486,11 @@ let show_exception () =
   reg_show_prim "show_exception"
     (fun env loc id lid ->
       let desc = Compat_top.find_constructor env loc lid in
-      if not (Ctype.equal env true [ desc.cstr_res ] [ Predef.type_exn ]) then
-        raise Not_found;
+      if
+        not
+          (Compat_top.ctype_is_equal env true [ desc.cstr_res ]
+             [ Predef.type_exn ])
+      then raise Not_found;
       let ret_type =
         if desc.cstr_generalized then Some Predef.type_exn else None
       in
@@ -463,6 +499,8 @@ let show_exception () =
           ~ext_args:desc.cstr_args ~ext_ret_type:ret_type
           ~ext_private:Asttypes.Public ~ext_loc:desc.cstr_loc
           ~ext_attributes:desc.cstr_attributes
+          ~ext_arg_jkinds:desc.cstr_arg_jkinds
+          ~ext_constant:desc.cstr_constant
       in
       [ sig_typext id ext ])
     "Print the signature of the corresponding exception."
@@ -534,35 +572,6 @@ let verbose t =
 let silent t =
   add_directive ~name:"silent" ~doc:"Be silent" (`Bool (fun x -> t.silent <- x))
 
-(* BLACK MAGIC: patch field of a module at runtime *)
-let monkey_patch (type a) (m : a) (type b) (prj : unit -> b) (v : b) =
-  let m = Obj.repr m in
-  let v = Obj.repr v in
-  let v' = Obj.repr (prj ()) in
-  if v' == v then ()
-  else
-    try
-      for i = 0 to Obj.size m - 1 do
-        if Obj.field m i == v' then (
-          Obj.set_field m i v;
-          if Obj.repr (prj ()) == v then raise Exit;
-          Obj.set_field m i v')
-      done;
-      invalid_arg "monkey_patch: field not found"
-    with Exit -> ()
-
-let patch_env () =
-  let module M = struct
-    module type T = module type of Env
-
-    let field () = Env.without_cmis
-
-    let replacement f x = f x
-
-    let () = monkey_patch (module Env : T) field replacement
-  end in
-  ()
-
 let protect f arg =
   try
     let _ = f arg in
@@ -598,14 +607,17 @@ let in_words s =
   split 0 0
 
 let init ~verbose:v ~silent:s ~verbose_findlib ~directives ~packages ~predicates () =
+  Arch.arch_check_symbols := false;
   Clflags.native_code := true;
+  Clflags.debug := true;
+  Flambda_backend_flags.(checkmach_details_cutoff := No_details);
   Clflags.real_paths := false;
   Opttoploop.set_paths ();
   Jit.init_top ();
   Mdx.Compat.init_path ();
   Opttoploop.toplevel_env := Compmisc.initial_env ();
   Sys.interactive := false;
-  patch_env ();
+  Toplevel_backend.init ~native:true (module Opttopdirs);  (* was patch_env *)
   List.iter
     (function
       | Directory path -> Opttopdirs.dir_directory path
@@ -652,3 +664,26 @@ let in_env e f =
   let env = !Opttoploop.toplevel_env in
   Hashtbl.replace envs env_name env;
   res
+
+(* The following is a temporary workaround to try to ensure the necessary
+   caml_apply functions are generated.  We should get up to and including
+   caml_apply26 with these.  We will try to fix the native toplevel code
+   to generate the necessary caml_apply and caml_curry functions for each
+   fragment if they are not already in the main program. *)
+
+[@@@ocaml.warning "-32"]  (* allow unused *)
+
+let force_caml_apply19 f =
+  f 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18
+
+let force_caml_apply20 f =
+  f 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19
+
+let force_caml_apply22 f =
+  f 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21
+
+let force_caml_apply23 f =
+  f 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22
+
+let force_caml_apply25 f =
+  f 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24

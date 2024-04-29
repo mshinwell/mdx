@@ -39,6 +39,9 @@ let rec get_id_in_path = function
   | Path.Pdot (p, _, _) -> get_id_in_path p
 #endif
   | Path.Papply (_, p) -> get_id_in_path p
+#if OCAML_VERSION >= (5, 0, 0)
+  | Path.Pextra_ty (p, _) -> get_id_in_path p
+#endif
 
 let lookup_type typ env =
 #if OCAML_VERSION >= (4, 10, 0)
@@ -58,7 +61,7 @@ let lookup_value v env =
 
 let find_value env loc id =
 #if OCAML_VERSION >= (4, 10, 0)
-  Env.lookup_value ~loc id env
+  let (p,v,_,_) = Env.lookup_value ~loc id env in (p,v)
 #else
   Typetexp.find_value env loc id
 #endif
@@ -106,7 +109,9 @@ let find_class_type env loc id =
 #endif
 
 let type_structure env str loc =
-#if OCAML_VERSION >= (4, 8, 0)
+#if OCAML_VERSION >= (4, 14, 0)
+  let tstr, _, _, _, env =
+#elif OCAML_VERSION >= (4, 8, 0)
   let tstr, _, _, env =
 #else
   let tstr, _, env =
@@ -158,7 +163,8 @@ let mty_path =
 #endif
   | Mty_ident _
   | Mty_signature _
-  | Mty_functor _ ->
+  | Mty_functor _
+  | Mty_strengthen _ ->
     None
 
 let sig_modtype id desc =
@@ -236,6 +242,10 @@ let extension_constructor
     ~ext_private
     ~ext_loc
     ~ext_attributes
+#if OCAML_VERSION >= (4, 14, 0)
+    ~ext_arg_jkinds
+    ~ext_constant
+#endif
   =
   let open Types in
   let ext_args =
@@ -253,13 +263,17 @@ let extension_constructor
   ; ext_loc
   ; ext_attributes
 #if OCAML_VERSION >= (4, 11, 0)
-  ; ext_uid = Uid.mk ~current_unit:"mdx"
+  ; ext_uid = Uid.mk ~current_unit:(Some ("mdx" |> Compilation_unit.of_string))
+#endif
+#if OCAML_VERSION >= (4, 14, 0)
+  ; ext_arg_jkinds
+  ; ext_constant
 #endif
   }
 
 let is_predef_or_global id =
 #if OCAML_VERSION >= (4, 8, 0)
-  Ident.is_predef id || Ident.global id
+  Ident.is_global_or_predef id
 #else
   Ident.binding_time id < 1000
 #endif
@@ -325,7 +339,7 @@ let match_env
     env =
   ignore (constraints, persistent, copy_types, value_unbound, module_unbound);
   match env with
-  | Env.Env_value (summary, id, _) ->
+  | Env.Env_value (summary, id, _, _) ->
     value summary id
   | Env_empty -> empty ()
 #if OCAML_VERSION >= (4, 7, 0) && OCAML_VERSION < (4, 8, 0)
@@ -383,6 +397,13 @@ let top_directive_require pkg =
         Some { pdira_desc = Pdir_string pkg; pdira_loc = Location.none };
       pdir_loc = Location.none;
     }
-#else  
+#else
   Parsetree.Ptop_dir ("require", Pdir_string pkg)
+#endif
+
+let ctype_is_equal =
+#if OCAML_VERSION >= (4, 13, 0)
+  Ctype.is_equal
+#else
+  Ctype.equal
 #endif

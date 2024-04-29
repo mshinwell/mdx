@@ -60,6 +60,19 @@ val add_directive :
     Env.t -> Location.t -> Ident.t -> Longident.t -> Types.signature ] ->
   unit
 
+#if OCAML_VERSION >= (4, 14, 0)
+val extension_constructor :
+  ext_type_path:Path.t ->
+  ext_type_params:Types.type_expr list ->
+  ext_args:(Types.type_expr * Mode.Global_flag.t) list ->
+  ext_ret_type:Types.type_expr option ->
+  ext_private:Asttypes.private_flag ->
+  ext_loc:Location.t ->
+  ext_attributes:Parsetree.attributes ->
+  ext_arg_jkinds:Jkind.t array ->
+  ext_constant:bool ->
+  Types.extension_constructor
+#else
 val extension_constructor :
   ext_type_path:Path.t ->
   ext_type_params:Types.type_expr list ->
@@ -69,6 +82,7 @@ val extension_constructor :
   ext_loc:Location.t ->
   ext_attributes:Parsetree.attributes ->
   Types.extension_constructor
+#endif
 
 val is_predef_or_global : Ident.t -> bool
 
@@ -105,3 +119,6 @@ val top_directive_name : Parsetree.toplevel_phrase -> string option
 
 val top_directive_require : string -> Parsetree.toplevel_phrase
 (** [top_directive require "pkg"] builds the AST for [#require "pkg"] *)
+
+val ctype_is_equal :
+  Env.t -> bool -> Types.type_expr list -> Types.type_expr list -> bool

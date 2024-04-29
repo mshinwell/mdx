@@ -114,5 +114,8 @@ let run ?(syntax = Normal) ?(force_output = false) ~f infile =
   let outfile = infile ^ ".corrected" in
   run_str ~syntax ~f infile >>| fun (test_result, corrected) ->
   match (force_output, test_result) with
-  | true, _ | false, Differs -> write_file ~outfile corrected
+  | true, _ | false, Differs ->
+    write_file ~outfile corrected;
+    Ppxlib_print_diff.print ~file1:infile ~file2:outfile ();
+    exit 1
   | false, Identical -> if Sys.file_exists outfile then Sys.remove outfile
